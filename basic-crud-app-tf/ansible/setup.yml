@@ -1,0 +1,136 @@
+---
+# Configures the CRUD app server: installs Apache + PHP, pulls DB
+# credentials from Parameter Store, points the app at RDS, imports the
+# schema, and serves the app over plain HTTP on port 80.
+- name: Configure PHP CRUD app server
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    # Both overridden at runtime by the EC2 userdata script via
+    # --extra-vars "aws_region=... ssm_prefix=..." (see ../userdata.sh.tpl).
+    ssm_prefix: "/crud-app/db"
+    aws_region: "us-east-1"
+    app_src: "/srv/app"
+    doc_root: "/var/www/html"
+
+  tasks:
+    - name: Install Apache, PHP, and MySQL client packages
+      ansible.builtin.dnf:
+        name:
+          - httpd
+          - php
+          - php-cli
+          - php-pdo
+          - php-mysqlnd
+          - mariadb105
+        state: present
+        update_cache: true
+
+    - name: Look up DB connection details in Parameter Store
+      ansible.builtin.command:
+        cmd: >
+          aws ssm get-parameter --name "{{ ssm_prefix }}/{{ item.name }}"
+          --region "{{ aws_region }}"
+          {{ '--with-decryption' if item.secure else '' }}
+          --query Parameter.Value --output text
+      register: ssm_lookup
+      changed_when: false
+      no_log: true
+      loop:
+        - { name: "host", secure: false }
+        - { name: "port", secure: false }
+        - { name: "name", secure: false }
+        - { name: "username", secure: false }
+        - { name: "password", secure: true }
+
+    - name: Map DB connection details to facts
+      ansible.builtin.set_fact:
+        db_host: "{{ ssm_lookup.results[0].stdout }}"
+        db_port: "{{ ssm_lookup.results[1].stdout }}"
+        db_name: "{{ ssm_lookup.results[2].stdout }}"
+        db_user: "{{ ssm_lookup.results[3].stdout }}"
+        db_password: "{{ ssm_lookup.results[4].stdout }}"
+      no_log: true
+
+    - name: Wait for the RDS database to accept connections
+      ansible.builtin.wait_for:
+        host: "{{ db_host }}"
+        port: "{{ db_port | int }}"
+        timeout: 300
+
+    - name: Copy application source to Apache document root
+      ansible.builtin.copy:
+        src: "{{ app_src }}/"
+        dest: "{{ doc_root }}/"
+        remote_src: true
+
+    - name: Set document root ownership
+      ansible.builtin.file:
+        path: "{{ doc_root }}"
+        state: directory
+        owner: apache
+        group: apache
+        recurse: true
+
+    - name: Set directory/file permissions under document root
+      ansible.builtin.shell: |
+        find {{ doc_root }} -type d -exec chmod 755 {} \;
+        find {{ doc_root }} -type f -exec chmod 644 {} \;
+      changed_when: true
+
+    - name: Write DB connection environment variables for Apache/PHP
+      ansible.builtin.copy:
+        dest: /etc/httpd/conf.d/crud-app-env.conf
+        owner: root
+        group: root
+        mode: "0640"
+        content: |
+          SetEnv DB_HOST "{{ db_host }}"
+          SetEnv DB_PORT "{{ db_port }}"
+          SetEnv DB_NAME "{{ db_name }}"
+          SetEnv DB_USER "{{ db_user }}"
+          SetEnv DB_PASS "{{ db_password }}"
+      no_log: true
+
+    # Idempotent regardless of prior state: no-ops on a fresh install where
+    # port 80 was never touched, and re-enables it on a box that previously
+    # ran an older version of this playbook which disabled it for TLS-only.
+    - name: Ensure the HTTP listener is enabled on port 80
+      ansible.builtin.lineinfile:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: "^#?Listen 80$"
+        line: "Listen 80"
+
+    - name: Ensure app state directory exists
+      ansible.builtin.file:
+        path: /var/lib/crud-app
+        state: directory
+        mode: "0755"
+
+    - name: Import schema into RDS (first run only)
+      ansible.builtin.shell: >
+        mysql -h {{ db_host }} -P {{ db_port }} -u {{ db_user }}
+        {{ db_name }} < {{ app_src }}/schema.sql
+      args:
+        creates: /var/lib/crud-app/.schema_imported
+      environment:
+        # Passed via env var (not -p on the command line) so a password
+        # containing shell metacharacters (from random_password's
+        # override_special in rds.tf) can't break the command, and so it
+        # never shows up in argv/ps output.
+        MYSQL_PWD: "{{ db_password }}"
+      no_log: true
+
+    - name: Record that the schema has been imported
+      ansible.builtin.file:
+        path: /var/lib/crud-app/.schema_imported
+        state: touch
+        mode: "0644"
+
+    - name: Enable and restart Apache
+      ansible.builtin.systemd:
+        name: httpd
+        state: restarted
+        enabled: true
