@@ -1,0 +1,117 @@
+---
+- name: Install Apache, PHP and the MySQL client
+  ansible.builtin.dnf:
+    name:
+      - httpd
+      - php
+      - php-cli
+      - php-pdo
+      - php-mysqlnd
+      - mariadb105
+    state: present
+    update_cache: true
+
+- name: Look up DB connection details in Parameter Store
+  ansible.builtin.command:
+    cmd: >
+      aws ssm get-parameter --name "{{ ssm_prefix }}/{{ item }}"
+      --region "{{ aws_region }}" --query Parameter.Value --output text
+  register: ssm_lookup
+  changed_when: false
+  loop: [host, port, name, username]
+
+- name: Read the RDS-managed master password from Secrets Manager
+  ansible.builtin.command:
+    cmd: >
+      aws secretsmanager get-secret-value --secret-id "{{ db_secret_arn }}"
+      --region "{{ aws_region }}" --query SecretString --output text
+  register: db_secret
+  changed_when: false
+  no_log: true
+
+- name: Map DB connection details to facts
+  ansible.builtin.set_fact:
+    db_host: "{{ ssm_lookup.results[0].stdout }}"
+    db_port: "{{ ssm_lookup.results[1].stdout }}"
+    db_name: "{{ ssm_lookup.results[2].stdout }}"
+    db_user: "{{ ssm_lookup.results[3].stdout }}"
+    db_password: "{{ (db_secret.stdout | from_json).password }}"
+  no_log: true
+
+- name: Wait for the RDS database to accept connections
+  ansible.builtin.wait_for:
+    host: "{{ db_host }}"
+    port: "{{ db_port | int }}"
+    timeout: 600
+
+# No `mode:` here: with a directory dest it is applied to the dest directory
+# itself too, so 0644 stripped the execute bit and Apache answered 403.
+- name: Copy application source to the Apache document root
+  ansible.builtin.copy:
+    src: "{{ app_src }}/"
+    dest: "{{ doc_root }}/"
+    remote_src: true
+    owner: apache
+    group: apache
+    directory_mode: "0755"
+  notify: Restart httpd
+
+- name: Ensure the document root is traversable and app files are readable
+  ansible.builtin.file:
+    path: "{{ doc_root }}"
+    state: directory
+    owner: apache
+    group: apache
+    mode: "0755"
+    recurse: false
+
+- name: Write DB connection environment variables for Apache/PHP
+  ansible.builtin.copy:
+    dest: /etc/httpd/conf.d/crud-app-env.conf
+    owner: root
+    group: root
+    mode: "0640"
+    content: |
+      SetEnv DB_HOST "{{ db_host }}"
+      SetEnv DB_PORT "{{ db_port }}"
+      SetEnv DB_NAME "{{ db_name }}"
+      SetEnv DB_USER "{{ db_user }}"
+      SetEnv DB_PASS "{{ db_password }}"
+  no_log: true
+  notify: Restart httpd
+
+- name: Ensure the app state directory exists
+  ansible.builtin.file:
+    path: "{{ state_dir }}"
+    state: directory
+    mode: "0755"
+
+# schema.sql is idempotent (CREATE ... IF NOT EXISTS, guarded seed insert), so
+# it is safe for every instance in the fleet to run it. The marker only avoids
+# repeating it when the playbook is re-run on the same instance.
+- name: Import schema into RDS
+  ansible.builtin.shell: >
+    mysql -h {{ db_host }} -P {{ db_port }} -u {{ db_user }} {{ db_name }}
+    < {{ app_src }}/schema.sql
+  args:
+    creates: "{{ state_dir }}/.schema_imported"
+  environment:
+    # Env var (not -p on the command line): the generated password may contain
+    # shell metacharacters and must not show up in argv/ps output.
+    MYSQL_PWD: "{{ db_password }}"
+  no_log: true
+
+- name: Record that the schema has been imported
+  ansible.builtin.file:
+    path: "{{ state_dir }}/.schema_imported"
+    state: touch
+    mode: "0644"
+
+- name: Enable and start Apache
+  ansible.builtin.systemd:
+    name: httpd
+    state: started
+    enabled: true
+
+- name: Apply any pending Apache restart now
+  ansible.builtin.meta: flush_handlers

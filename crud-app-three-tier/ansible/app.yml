@@ -1,0 +1,9 @@
+---
+# Backend tier: Apache + PHP CRUD app talking to RDS.
+# aws_region, ssm_prefix and db_secret_arn are passed by userdata via --extra-vars.
+- name: Configure backend (Apache/PHP) server
+  hosts: localhost
+  connection: local
+  become: true
+  roles:
+    - php_backend

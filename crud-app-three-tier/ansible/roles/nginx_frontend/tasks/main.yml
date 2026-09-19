@@ -1,0 +1,33 @@
+---
+- name: Install nginx
+  ansible.builtin.dnf:
+    name: nginx
+    state: present
+    update_cache: true
+
+- name: Create the static assets directory
+  ansible.builtin.file:
+    path: "{{ static_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write nginx configuration (reverse proxy to the internal ALB)
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: nginx -t -c %s
+  notify: Restart nginx
+
+- name: Enable and start nginx
+  ansible.builtin.systemd:
+    name: nginx
+    state: started
+    enabled: true
+
+- name: Apply any pending nginx restart now
+  ansible.builtin.meta: flush_handlers

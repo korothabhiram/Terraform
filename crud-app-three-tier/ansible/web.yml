@@ -1,0 +1,9 @@
+---
+# Web/proxy tier: nginx reverse proxy + static assets.
+# upstream_host (the internal ALB DNS name) is passed by userdata via --extra-vars.
+- name: Configure web (nginx) server
+  hosts: localhost
+  connection: local
+  become: true
+  roles:
+    - nginx_frontend

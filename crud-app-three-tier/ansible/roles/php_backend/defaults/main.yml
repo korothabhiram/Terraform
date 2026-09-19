@@ -1,0 +1,9 @@
+---
+# All three are overridden by userdata via --extra-vars.
+aws_region: "us-east-1"
+ssm_prefix: "/crud-3tier/db"
+db_secret_arn: ""
+
+app_src: /srv/app
+doc_root: /var/www/html
+state_dir: /var/lib/crud-app

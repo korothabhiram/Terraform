@@ -1,0 +1,4 @@
+---
+# Internal ALB DNS name that requests are proxied to (set by userdata).
+upstream_host: "internal-alb.example.local"
+static_root: /var/www/static
