@@ -47,6 +47,8 @@ flowchart TB
     apptask -.->|"at task start"| sm["Secrets Manager<br/>RDS-managed password"]
 ```
 
+A draw.io version is in [`architecture.drawio`](./architecture.drawio).
+
 Each tier only accepts traffic from the tier above it:
 
 ```
