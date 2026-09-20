@@ -70,7 +70,15 @@ module "ecs_nodes" {
 
   # Instances need the NAT route before they can reach the ECS control plane and
   # ECR (subnet-ID references alone do not wait for it).
-  depends_on = [module.vpc]
+  #
+  # The security-group modules are listed for the destroy side. The SG *id* the
+  # launch template references does not include the rules, so without this
+  # Terraform removes the "allow all outbound" rule while the instances are
+  # still running. The ECS agent then loses its connection and the services
+  # cannot finish deleting (they sat in DRAINING until the 20 minute timeout).
+  # With it, the order on destroy is services -> capacity providers -> ASGs ->
+  # security-group rules.
+  depends_on = [module.vpc, module.web_sg, module.app_sg]
 }
 
 module "ecs" {

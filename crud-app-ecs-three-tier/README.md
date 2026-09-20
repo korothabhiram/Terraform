@@ -262,6 +262,12 @@ aws ssm start-session --target <instance-id>
 terraform destroy
 ```
 
+Expect it to take several minutes: ECS drains the services before the instances and the
+network can go. If a destroy ever does stall with the services stuck in `DRAINING` (the
+symptom of the ordering problem described below), terminate the container instances
+(`aws ec2 terminate-instances`, after setting both node ASGs to min and desired 0 so they are
+not replaced) and run `terraform destroy` again.
+
 The demo stack is designed to be disposable: the ECR repositories have `force_delete`,
 `db_deletion_protection` is off and `db_skip_final_snapshot` is on. The state bucket is
 separate, versioned and has `force_destroy = false`, so to remove it, empty all object versions
@@ -349,8 +355,17 @@ three-step first deploy, no errors):
 - **Idempotence:** after the apply, `terraform plan` reports no changes. Getting there needed
   one fix, described under "Things worth knowing" (`depends_on` on the service modules).
 
+- **Teardown:** the first `terraform destroy` **failed**: both ECS services sat in `DRAINING`
+  until Terraform's 20 minute timeout, because the security-group rules (including "allow all
+  outbound") were removed while the container instances were still running, which cut the
+  ECS agent off. The instances were terminated by hand and a second destroy finished cleanly
+  (82 resources), leaving nothing behind in the account except the state bucket. The
+  configuration has since been changed so the rules are removed last (see "Things worth
+  knowing"). **That fix has been checked against Terraform's dependency graph, not with a
+  second live destroy.**
+
 Not yet exercised: a rolling deployment of a changed image, the deployment circuit-breaker
-rollback, managed scaling adding an instance under load, and `terraform destroy`.
+rollback, and managed scaling adding an instance under load.
 
 ## Things worth knowing
 
@@ -370,6 +385,15 @@ rollback, managed scaling adding an instance under load, and `terraform destroy`
   alive). New instances launched by scaling get the new AMI.
 - **`destroy` and protected instances.** The container-instance ASGs set `force_delete`,
   otherwise instances protected from scale-in would block their deletion.
+- **`destroy` order and the security-group rules.** ECS can only delete a service while its
+  container instances can still talk to the ECS control plane, so the instances' outbound
+  rule has to outlive the services. The launch template references the security group's
+  *id*, which does not include its rules, so nothing enforced that and the rules were
+  removed first. `module "ecs_nodes"` now has
+  `depends_on = [module.vpc, module.web_sg, module.app_sg]`, which makes the destroy order
+  services, capacity providers, ASGs, then security-group rules. Side effect: a pending
+  change in one of those security-group modules can make the node ASG modules show values as
+  "known after apply" on that plan.
 - **`lifecycle` cannot be set on a `module` block** (Terraform rejects it), so lifecycle
   behaviour comes from module inputs (`ignore_desired_capacity_changes`, the deployment
   circuit breaker) and from what the modules do internally.
