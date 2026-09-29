@@ -1,0 +1,71 @@
+name: commit-lint
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  commit-lint:
+    name: commit-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Branch name must be TRY-<number>
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if ! printf '%s' "$HEAD_REF" | grep -Eq '^TRY-[0-9]+$'; then
+            echo "::error::Branch '$HEAD_REF' must be named TRY-<number>, e.g. TRY-1."
+            exit 1
+          fi
+          echo "Branch name OK: $HEAD_REF"
+
+      - name: "PR title must be TRY-<number>: <description>"
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # The PR title becomes the squash-merge commit subject on main,
+          # so it has to satisfy the same rule as the commits themselves.
+          if ! printf '%s' "$PR_TITLE" | grep -Eq '^TRY-[0-9]+: .+'; then
+            echo "::error::PR title must match 'TRY-<number>: <description>'. Got: $PR_TITLE"
+            exit 1
+          fi
+          echo "PR title OK: $PR_TITLE"
+
+      - name: "Every commit subject must be TRY-<number>: <description>"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          failed=0
+          # --no-merges: merge commits git wrote for you are exempt.
+          while IFS='|' read -r sha subject; do
+            [ -z "$sha" ] && continue
+            case "$subject" in
+              'Revert "'*) echo "skip  $sha  $subject"; continue ;;
+              'fixup! '*|'squash! '*|'amend! '*)
+                echo "::error::$sha is an unsquashed autosquash commit: $subject"
+                failed=1; continue ;;
+            esac
+            if printf '%s' "$subject" | grep -Eq '^TRY-[0-9]+: .+'; then
+              echo "ok    $sha  $subject"
+            else
+              echo "::error::$sha does not match 'TRY-<number>: <description>': $subject"
+              failed=1
+            fi
+          done <<< "$(git log --no-merges --format='%h|%s' "$BASE_SHA".."$HEAD_SHA")"
+
+          if [ "$failed" -ne 0 ]; then
+            echo
+            echo "Rewrite the offending messages, then force-push:"
+            echo "  git rebase -i $BASE_SHA   # reword each bad commit"
+            echo "  git push --force-with-lease"
+            exit 1
+          fi
+          echo "All commit subjects OK."
