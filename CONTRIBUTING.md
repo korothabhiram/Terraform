@@ -23,8 +23,8 @@ git commit -m 'TRY-1: add ECS task definition for the api service'
 git push -u origin TRY-1
 # open a PR titled: TRY-1: add ECS task definition for the api service
 # squash-merge once commit-lint is green
-git switch main && git pull --rebase
-git branch -d TRY-1                        # delete the branch, it is done
+git switch main && git pull --rebase --prune   # remote branch is already gone
+git branch -d TRY-1                        # drop the local copy too
 ```
 
 Keep branches short-lived — hours to a couple of days. A branch that lives for a
@@ -43,6 +43,7 @@ vertical slices that each keep `main` green.
 | `main` stays linear, squash-merge only | branch ruleset |
 | `commit-lint` must pass, branch must be up to date | branch ruleset |
 | `main` cannot be deleted or force-pushed | branch ruleset |
+| Branch is deleted once its PR merges | repo setting |
 
 ### Commit message format
 
