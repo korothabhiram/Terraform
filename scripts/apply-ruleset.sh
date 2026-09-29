@@ -30,14 +30,16 @@ fi
 slug=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 
 # --- merge behaviour ----------------------------------------------------
-# Squash-only here matches the ruleset's allowed_merge_methods, so the UI
-# does not offer a button the ruleset will refuse. delete_branch_on_merge
-# is a repo setting, not a ruleset rule; rulesets govern what may reach a
-# branch, this governs cleanup once a pull request lands.
+# delete_branch_on_merge is a repo setting, not a ruleset rule; rulesets
+# govern what may reach a branch, this governs cleanup once a pull request
+# lands. Deliberately absent: allow_merge_commit and allow_rebase_merge.
+# The ruleset's allowed_merge_methods already enforces squash-only, and
+# turning those flags off also strips options from the "Update branch"
+# button, which is how you satisfy the up-to-date requirement.
 if [ -f "$settings_file" ]; then
 	echo "Applying repo settings to $slug ..."
 	gh api --method PATCH "repos/$slug" --input "$settings_file" --jq \
-		'"  delete_branch_on_merge=\(.delete_branch_on_merge) squash=\(.allow_squash_merge) merge_commit=\(.allow_merge_commit) rebase=\(.allow_rebase_merge)"'
+		'"  delete_branch_on_merge=\(.delete_branch_on_merge) squash=\(.allow_squash_merge)"'
 fi
 
 # --- branch ruleset -----------------------------------------------------
