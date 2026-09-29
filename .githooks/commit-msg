@@ -1,0 +1,55 @@
+#!/bin/sh
+# Enforce the commit subject format: TRY-<number>: <description>
+#
+# Installed via: scripts/install-hooks.sh  (sets core.hooksPath=.githooks)
+# The same rule is re-checked in CI (.github/workflows/commit-lint.yml),
+# so skipping this hook with --no-verify only delays the failure.
+
+msg_file="$1"
+
+# Git's own rules: strip comment lines, then take the first non-blank line.
+subject=$(sed -e '/^#/d' "$msg_file" | sed -e '/^[[:space:]]*$/d' | head -n 1)
+
+# Commits git generates or rewrites for you are exempt.
+case "$subject" in
+	"Merge branch "*|"Merge remote-tracking branch "*|"Merge pull request "*|"Merge tag "*)
+		exit 0 ;;
+	'Revert "'*)
+		exit 0 ;;
+	"fixup! "*|"squash! "*|"amend! "*)
+		exit 0 ;;
+esac
+
+if ! printf '%s' "$subject" | grep -Eq '^TRY-[0-9]+: .+'; then
+	cat >&2 <<EOF
+
+  ✗ Commit rejected: the subject line must start with a TRY ticket prefix.
+
+    Required:  TRY-<number>: <description>
+    You wrote: $subject
+
+    Examples:
+      TRY-1: add ECS task definition for the api service
+      TRY-42: fix null deref in the health check
+
+    Fix the message with:  git commit --amend
+
+EOF
+	exit 1
+fi
+
+# Advisory only -- long subjects are truncated in most Git UIs.
+len=$(printf '%s' "$subject" | wc -c)
+if [ "$len" -gt 72 ]; then
+	printf '\n  ! Warning: subject is %s characters; 72 or fewer reads better in git log.\n\n' "$len" >&2
+fi
+
+# Advisory only -- trunk-based flow expects short-lived TRY-<n> branches.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+case "$branch" in
+	""|main|TRY-[0-9]*) ;;
+	*)
+		printf '  ! Warning: branch "%s" is not named TRY-<number>. CI will reject the pull request.\n\n' "$branch" >&2 ;;
+esac
+
+exit 0

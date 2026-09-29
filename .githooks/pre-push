@@ -1,0 +1,29 @@
+#!/bin/sh
+# Block direct pushes to the trunk. All changes reach main through a pull request.
+#
+# The branch-protection ruleset enforces this server-side too; this hook just
+# fails faster and with a friendlier message.
+
+remote_ref_prefix="refs/heads/"
+trunk="main"
+
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
+	case "$remote_ref" in
+		"$remote_ref_prefix$trunk")
+			cat >&2 <<EOF
+
+  ✗ Direct push to "$trunk" blocked.
+
+    Trunk-based flow: branch, push, open a pull request, squash-merge.
+
+      git switch -c TRY-<number>
+      git push -u origin TRY-<number>
+
+    If you truly need to bypass:  git push --no-verify
+
+EOF
+			exit 1 ;;
+	esac
+done
+
+exit 0
